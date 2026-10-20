@@ -1,32 +1,32 @@
-import json
-import logging
-import threading
+from collections import deque
 from playwright.sync_api import sync_playwright
+import time
+import threading
+import logging
+import json
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-	level=logging.DEBUG
-	)
-ALL_RESPONSES = []
-TERM_HOLDER = {"value": None}
-print_lock = threading.Lock()
+logging.basicConfig(level=logging.DEBUG)
+
+ALL_RESPONSES = deque(maxlen=100)
+response_lock = threading.Lock()
 
 def main():
-	with sync_playwright() as p:
-		url = input("What site do you want to browse?")
-		url = "https://www." + url if not url.startswith("https://www.") else url
-		logger.debug("Your url %s", url)
-		page, context = setup_browser(p)
-		page.on("response", handle_response)
-		page.goto(url)
+    with sync_playwright() as p:
+        url = input("What site do you want to browse? ")
+        url = "https://www." + url if not url.startswith("https://www.") else url
+        logger.debug("Your url %s", url)
+        page, context = setup_browser(p)
+        page.on("response", handle_response)
+        page.goto(url)
 
-		stop_event = threading.Event()
-		input_thread = threading.Thread(target=wait_input, args=(stop_event,), daemon=True)
-		input_thread.start()
-		while not stop_event.is_set():
-			page.wait_for_timeout(100)
+        stop_event = threading.Event()
+        input_thread = threading.Thread(target=wait_input, args=(stop_event,), daemon=True)
+        input_thread.start()
+        while not stop_event.is_set():
+            page.wait_for_timeout(100)
 
-		context.close()
+        context.close()
 
 
 def setup_browser(p):
@@ -41,13 +41,18 @@ def setup_browser(p):
 
 
 def handle_response(response):
-	if not response.headers.get("content-type") == "application/json":
-		return
+	if "application/json" not in response.headers.get("content-type", ""):
+    	return
 	try:	
-		ALL_RESPONSES.append(response.json())
-	except Exception:
-		return
+		body = response.json()
+		with response_lock:
+			ALL_RESPONSES.append(body)
 
+	except json.JSONDecodeError as e:
+        logger.debug("Falha ao decodificar JSON de %s: %s", response.url, e)
+        
+    except Exception as e:
+        logger.error("Erro inesperado ao processar resposta de %s: %s", response.url, e)
 
 def wait_input(stop_event):
 	while not stop_event.is_set():
@@ -56,7 +61,7 @@ def wait_input(stop_event):
 			stop_event.set()
 
 		else:
-			search_all(cmd):
+			search_all(cmd)
 
 
 
@@ -77,9 +82,10 @@ def find_element(term, response):
 
 
 def search_all(term):
-	for response_body in ALL_RESPONSES:
-		if result := find_element(term, response_body):
-			print(result)
+	with response_lock:
+		for response_body in ALL_RESPONSES:
+			if result := find_element(term, response_body):
+				print(result)
 
 
 if __name__ == "__main__":
